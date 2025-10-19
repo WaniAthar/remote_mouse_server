@@ -2,7 +2,7 @@
 
 ## 📦 Prerequisites
 
-- **Python 3.8+**
+- **Python 3.11++**
 - **uv** package manager → [Install uv](https://github.com/astral-sh/uv)
 
 ---
