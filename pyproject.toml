@@ -1,0 +1,13 @@
+[project]
+name = "remote-mouse-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.119.0",
+    "flet>=0.28.3",
+    "pynput>=1.8.1",
+    "qrcode[pil]>=8.2",
+    "ruff>=0.14.1",
+]
