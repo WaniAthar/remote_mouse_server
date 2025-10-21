@@ -13,142 +13,7 @@ import time
 from typing import Optional
 from datetime import datetime
 import contextlib
-from pathlib import Path
-from subprocess import TimeoutExpired
 import signal
-
-# App constants
-APP_VERSION = "2.0.0"
-DEFAULT_PORT = 8000
-CONFIG_FILE = "config.json"
-LOG_FILE = "server.log"
-STATE_FILE = "server.state.json"
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
-
-
-class Settings:
-    """Application settings manager with persistent storage"""
-    
-    def __init__(self):
-        self.preferred_port = DEFAULT_PORT
-        self.auto_start = False
-        self.theme = "dark"
-        self.sensitivity = 1.0
-        self.enable_logging = True
-        self.load()
-
-    def load(self):
-        """Load settings from config file"""
-        try:
-            if os.path.exists(CONFIG_FILE):
-                with open(CONFIG_FILE, 'r') as f:
-                    data = json.load(f)
-                    self.preferred_port = data.get('preferred_port', DEFAULT_PORT)
-                    self.auto_start = data.get('auto_start', False)
-                    self.theme = data.get('theme', 'dark')
-                    self.sensitivity = data.get('sensitivity', 1.0)
-                    self.enable_logging = data.get('enable_logging', True)
-                logger.info("Settings loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load settings: {e}")
-
-    def save(self):
-        """Save settings to config file"""
-        try:
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump({
-                    'preferred_port': self.preferred_port,
-                    'auto_start': self.auto_start,
-                    'theme': self.theme,
-                    'sensitivity': self.sensitivity,
-                    'enable_logging': self.enable_logging
-                }, f, indent=2)
-            logger.info("Settings saved successfully")
-        except Exception as e:
-            logger.error(f"Failed to save settings: {e}")
-
-
-class ServerManager:
-    """Manages the FastAPI server lifecycle"""
-    
-    def __init__(self):
-        self.process: Optional[subprocess.Popen] = None
-        self.port: Optional[int] = None
-        self.ip: Optional[str] = None
-        self.start_time: Optional[datetime] = None
-        self.pid: Optional[int] = None
-        self.is_running = False
-        self._check_and_load_state()
-
-    def _check_and_load_state(self):
-        """Check for a running server from a previous session."""
-        if os.path.exists(STATE_FILE):
-            try:
-                with open(STATE_FILE, 'r') as f:
-                    state = json.load(f)
-                
-                pid = state.get('pid')
-                port = state.get('port')
-                if pid and port and self._is_server_process_running(pid, port):
-                    logger.info(f"Found running server with PID {pid} on port {port}")
-                    self.is_running = True
-                    self.pid = pid
-                    self.ip = state.get('ip')
-                    self.port = port
-                    self.start_time = datetime.fromisoformat(state.get('start_time'))
-                else:
-                    logger.info("Stale state file found. Cleaning up.")
-                    self._clear_state()
-            except (json.JSONDecodeError, KeyError, OSError) as e:
-                logger.error(f"Error loading state file, cleaning up: {e}")
-                self._clear_state()
-
-    def _is_server_process_running(self, pid: int, port: int) -> bool:
-        """Check if a process with the given PID is running and listening on the port."""
-        # 1. Check if the port is in use
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(('127.0.0.1', port)) != 0:
-                logger.debug(f"Port {port} is not open.")
-                return False  # Port is not open
-
-        # 2. Check if the PID is running
-        if sys.platform == "win32":
-            result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], capture_output=True, text=True)
-            is_running = str(pid) in result.stdout
-        else:
-            try:
-                os.kill(pid, 0)
-                is_running = True
-            except OSError:
-                is_running = False
-        
-        if not is_running:
-            logger.debug(f"PID {pid} is not running.")
-
-        return is_running
-
-    def _save_state(self):
-        """Save server state to a file."""
-        if not self.pid: return
-        state = {
-            'pid': self.pid,
-            'ip': self.ip,
-            'port': self.port,
-            'start_time': self.start_time.isoformat() if self.start_time else None
-        }
-        try:
-            with open(STATE_FILE, 'w') as f:
-                json.dump(state, f)
             logger.info(f"Server state saved for PID {self.pid}")
         except Exception as e:
             logger.error(f"Failed to save server state: {e}")
@@ -194,7 +59,6 @@ class ServerManager:
             if not os.path.exists("main.py"):
                 return False, "main.py not found. Please ensure the FastAPI server file exists."
 
-            # Platform-specific process creation for detached process
             creation_flags = 0
             preexec_fn = None
             if sys.platform == "win32":
@@ -207,10 +71,9 @@ class ServerManager:
                  "--host", "0.0.0.0", "--port", str(self.port)],
                 creationflags=creation_flags,
                 preexec_fn=preexec_fn,
-                # stdout and stderr are not piped to allow detachment
             )
             
-            time.sleep(2) # Give server time to start
+            time.sleep(2)
             if self.process.poll() is not None:
                 return False, "Server failed to start. Check logs for details."
             
@@ -237,7 +100,6 @@ class ServerManager:
             if pid_to_stop:
                 logger.info(f"Stopping server process with PID: {pid_to_stop}")
                 if sys.platform == "win32":
-                    # Use taskkill for a more robust termination on Windows
                     subprocess.run(["taskkill", "/F", "/PID", str(pid_to_stop)], check=True, capture_output=True)
                 else:
                     os.kill(pid_to_stop, signal.SIGTERM)
@@ -251,7 +113,6 @@ class ServerManager:
             
         except Exception as e:
             logger.error(f"Failed to stop server: {e}")
-            # If stopping failed, the state might be inconsistent. Clear it.
             self.is_running = False
             self._clear_state()
             return False, f"Error stopping server: {str(e)}"
@@ -259,11 +120,11 @@ class ServerManager:
     def get_uptime(self) -> str:
         """Get server uptime as a formatted string"""
         if not self.start_time:
-            return "N/A"
+            return "00:00:00"
         delta = datetime.now() - self.start_time
         hours, remainder = divmod(int(delta.total_seconds()), 3600)
         minutes, seconds = divmod(remainder, 60)
-        return f"{hours}h {minutes}m {seconds}s"
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def generate_qr(ip: str, port: int) -> tuple[ft.Image, str]:
@@ -279,7 +140,7 @@ def generate_qr(ip: str, port: int) -> tuple[ft.Image, str]:
         img.save(buf, format="PNG")
         src_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         
-        return ft.Image(src_base64=src_base64, width=280, height=280, border_radius=15), ws_url
+        return ft.Image(src_base64=src_base64, width=250, height=250, border_radius=12), ws_url
     except Exception as e:
         logger.error(f"Failed to generate QR code: {e}")
         raise
@@ -287,36 +148,43 @@ def generate_qr(ip: str, port: int) -> tuple[ft.Image, str]:
 
 def main(page: ft.Page):
     page.title = "Remote Mouse Server"
-    page.window.width = 900
-    page.window.height = 700
-    page.window.min_width = 400
-    page.window.min_height = 500
+    page.window_width = 700
+    page.window_height = 500
+    page.window_min_width = 600
+    page.window_min_height = 450
     page.padding = 0
     page.spacing = 0
+    
+    # Initialize managers
     settings = Settings()
     server = ServerManager()
     shutdown_event = threading.Event()
     
-    # Apply theme
-    page.theme_mode = ft.ThemeMode.DARK if settings.theme == "dark" else ft.ThemeMode.LIGHT
-    page.bgcolor = "#000000" if settings.theme == "dark" else "#f5f7fa"
+    # Apply theme mode
+    if settings.theme == "dark":
+        page.theme_mode = ft.ThemeMode.DARK
+    elif settings.theme == "light":
+        page.theme_mode = ft.ThemeMode.LIGHT
+    else:
+        page.theme_mode = ft.ThemeMode.SYSTEM
 
-    # Status indicator ref
-    status_indicator = ft.Container(
-        width=12,
-        height=12,
-        border_radius=6,
-        bgcolor="#ef4444",
-        shadow=ft.BoxShadow(
-            spread_radius=0,
-            blur_radius=8,
-            color="#ef444440",
-        )
-    )
+    # UI References
+    status_indicator = ft.Icon("circle", size=12, color="red")
+    status_text = ft.Text("Offline", size=11)
+    
+    ip_text = ft.Text("---.---.---.---", size=13, weight=ft.FontWeight.W_500)
+    port_text = ft.Text("----", size=13, weight=ft.FontWeight.W_500)
+    uptime_text = ft.Text("00:00:00", size=28, weight=ft.FontWeight.W_600)
+    qr_container = ft.Container(alignment=ft.alignment.center, expand=True)
+    status_bar_text = ft.Text("Ready", size=11)
+    
+    # Main button reference
+    start_btn = ft.Ref[ft.FilledButton]()
+    stop_btn = ft.Ref[ft.OutlinedButton]()
 
     def update_uptime():
         """Background thread to update uptime"""
-        while True:
+        while not shutdown_event.is_set():
             time.sleep(1)
             if server.is_running:
                 try:
@@ -330,449 +198,416 @@ def main(page: ft.Page):
     def show_snackbar(message: str, is_error: bool = False):
         """Show a snackbar notification"""
         page.snack_bar = ft.SnackBar(
-            content=ft.Text(message, color="white"),
-            bgcolor="#ef4444" if is_error else "#10b981"
+            content=ft.Text(message),
+            action="OK",
         )
         page.snack_bar.open = True
         page.update()
 
-    def show_info_dialog(e):
-        """Show about dialog"""
-        def close_dlg(e):
-            dialog.open = False
-            page.update()
+    # Dialogs
+    about_dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("About Remote Mouse Server"),
+        content=ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon("mouse", size=48),
+                    ft.Column([
+                        ft.Text("Remote Mouse Server", size=18, weight=ft.FontWeight.BOLD),
+                        ft.Text(f"Version {APP_VERSION}", size=12),
+                    ], spacing=4),
+                ], spacing=16),
+                ft.Divider(height=20),
+                ft.Text("Control your computer remotely using your smartphone as a mouse and keyboard.", size=13),
+                ft.Divider(height=10),
+                ft.Text("Features:", size=14, weight=ft.FontWeight.BOLD),
+                ft.Text("• Real-time WebSocket communication", size=12),
+                ft.Text("• Gyroscope-based motion tracking", size=12),
+                ft.Text("• Secure QR code pairing", size=12),
+                ft.Text("• Cross-platform support", size=12),
+                ft.Divider(height=20),
+                ft.Text("Built with Flet & FastAPI", size=11, italic=True),
+            ], tight=True, spacing=4),
+            width=450,
+        ),
+        actions=[
+            ft.TextButton("Close", on_click=lambda e: page.close(about_dlg)),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
 
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("About Remote Mouse", size=24, weight=ft.FontWeight.BOLD),
-            content=ft.Container(
-                content=ft.Column([
-                    ft.Text(f"Version {APP_VERSION}", size=16, color="#6b7280"),
-                    ft.Divider(height=20, color="transparent"),
-                    ft.Text("Control your desktop mouse using your smartphone's gyroscope and touch sensors.", 
-                           size=14, color="#9ca3af"),
-                    ft.Divider(height=10, color="transparent"),
-                    ft.Text("Features:", size=16, weight=ft.FontWeight.BOLD),
-                    ft.Text("• Real-time WebSocket connection", size=13, color="#9ca3af"),
-                    ft.Text("• Gyroscope motion tracking", size=13, color="#9ca3af"),
-                    ft.Text("• Touch gesture controls", size=13, color="#9ca3af"),
-                    ft.Text("• Secure QR code pairing", size=13, color="#9ca3af"),
-                    ft.Divider(height=20, color="transparent"),
-                    ft.Text("Built with Flet & FastAPI", size=12, italic=True, color="#6b7280"),
-                ], tight=True, spacing=5),
-                width=400,
-            ),
-            actions=[
-                ft.TextButton("Close", on_click=close_dlg),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        
-        page.dialog = dialog
-        dialog.open = True
-        page.update()
+    # Settings dialog
+    port_field = ft.TextField(
+        label="Server Port",
+        value=str(settings.preferred_port),
+        keyboard_type=ft.KeyboardType.NUMBER,
+        width=200,
+    )
+    
+    theme_dropdown = ft.Dropdown(
+        label="Theme",
+        value=settings.theme,
+        options=[
+            ft.dropdown.Option("light", "Light"),
+            ft.dropdown.Option("dark", "Dark"),
+            ft.dropdown.Option("system", "System"),
+        ],
+        width=200,
+    )
 
-    def show_settings_dialog(e):
-        """Show settings dialog"""
-        def close_dlg(e):
-            dialog.open = False
-            page.update()
+    auto_start_switch = ft.Switch(
+        label="Auto-start server on launch",
+        value=settings.auto_start,
+    )
 
-        port_field = ft.TextField(
-            label="Preferred Port",
-            value=str(settings.preferred_port),
-            hint_text="1024-65535",
-            border_color="#3b82f6",
-            focused_border_color="#2563eb",
-            expand=True
-        )
+    logging_switch = ft.Switch(
+        label="Enable detailed logging",
+        value=settings.enable_logging,
+    )
 
-      
-
-        theme_dropdown = ft.Dropdown(
-            label="Theme",
-            value=settings.theme,
-            options=[
-                ft.dropdown.Option("light", "Light"),
-                ft.dropdown.Option("dark", "Dark"),
-            ],
-            border_color="#3b82f6",
-            focused_border_color="#2563eb",
-            expand=True
-        )
-
-        auto_start_switch = ft.Switch(
-            label="Auto-start server on launch",
-            value=settings.auto_start,
-            active_color="#3b82f6"
-        )
-
-        logging_switch = ft.Switch(
-            label="Enable logging",
-            value=settings.enable_logging,
-            active_color="#3b82f6"
-        )
-
-        def save_settings(e):
-            try:
-                new_port = int(port_field.value)
-                if not (1024 <= new_port <= 65535):
-                    port_field.error_text = "Port must be between 1024 and 65535"
-                    page.update()
-                    return
-
-                settings.preferred_port = new_port
-                settings.theme = theme_dropdown.value
-                settings.auto_start = auto_start_switch.value
-                settings.enable_logging = logging_switch.value
-                settings.save()
-
-                page.theme_mode = ft.ThemeMode.DARK if settings.theme == "dark" else ft.ThemeMode.LIGHT
-                page.bgcolor = "#000000" if settings.theme == "dark" else "#f5f7fa"
-                
-                # Update card backgrounds
-                status_card.bgcolor = "#1a1a1a" if settings.theme == "dark" else "white"
-                qr_section.bgcolor = "#1a1a1a" if settings.theme == "dark" else "white"
-                
-                dialog.open = False
+    def save_settings(e):
+        try:
+            new_port = int(port_field.value)
+            if not (1024 <= new_port <= 65535):
+                port_field.error_text = "Port must be between 1024 and 65535"
                 page.update()
-                show_snackbar("Settings saved successfully")
-            except ValueError:
-                port_field.error_text = "Please enter a valid port number"
-                page.update()
+                return
 
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Settings", size=24, weight=ft.FontWeight.BOLD),
-            content=ft.Container(
-                content=ft.Column([
-                    port_field,
-                    ft.Divider(height=10, color="transparent"),
-                    ft.Text("Mouse Sensitivity", size=14, weight=ft.FontWeight.W_500),
-                    ft.Divider(height=10, color="transparent"),
-                    theme_dropdown,
-                    ft.Divider(height=20, color="#e5e7eb"),
-                    auto_start_switch,
-                    logging_switch,
-                ], tight=True, spacing=10),
-                width=400,
-            ),
-            actions=[
-                ft.TextButton("Cancel", on_click=close_dlg),
-                ft.ElevatedButton("Save", on_click=save_settings, bgcolor="#3b82f6", color="white"),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        
-        page.dialog = dialog
-        dialog.open = True
-        page.update()
+            settings.preferred_port = new_port
+            settings.theme = theme_dropdown.value
+            settings.auto_start = auto_start_switch.value
+            settings.enable_logging = logging_switch.value
+            settings.save()
 
-    def show_logs_dialog(e):
-        """Show logs dialog"""
-        def close_dlg(e):
-            dialog.open = False
+            if settings.theme == "dark":
+                page.theme_mode = ft.ThemeMode.DARK
+            elif settings.theme == "light":
+                page.theme_mode = ft.ThemeMode.LIGHT
+            else:
+                page.theme_mode = ft.ThemeMode.SYSTEM
+            
+            page.close(settings_dlg)
+            show_snackbar("Settings saved successfully")
+            
+        except ValueError:
+            port_field.error_text = "Invalid port number"
             page.update()
 
+    settings_dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Settings"),
+        content=ft.Container(
+            content=ft.Column([
+                ft.Text("Network Configuration", weight=ft.FontWeight.BOLD, size=14),
+                port_field,
+                ft.Divider(height=20),
+                ft.Text("Appearance", weight=ft.FontWeight.BOLD, size=14),
+                theme_dropdown,
+                ft.Divider(height=20),
+                ft.Text("Behavior", weight=ft.FontWeight.BOLD, size=14),
+                auto_start_switch,
+                logging_switch,
+            ], tight=True, spacing=10),
+            width=400,
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda e: page.close(settings_dlg)),
+            ft.FilledButton("Save", on_click=save_settings),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    # Logs dialog
+    logs_text = ft.Text("", size=10, selectable=True)
+    
+    def refresh_logs():
         try:
             if os.path.exists(LOG_FILE):
                 with open(LOG_FILE, 'r') as f:
                     logs = f.read()
                     log_lines = logs.split('\n')[-100:]
-                    log_content = '\n'.join(log_lines)
+                    logs_text.value = '\n'.join(log_lines)
+                    page.update()
             else:
-                log_content = "No logs available"
-        except Exception as ex:
-            log_content = f"Error reading logs: {ex}"
-
-        def clear_logs(e):
-            try:
-                with open(LOG_FILE, 'w') as f:
-                    f.write('')
-                show_snackbar("Logs cleared")
-                dialog.open = False
+                logs_text.value = "No logs available"
                 page.update()
-            except Exception as ex:
-                show_snackbar(f"Error clearing logs: {ex}", True)
+        except Exception as ex:
+            logs_text.value = f"Error reading logs: {ex}"
+            page.update()
 
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Server Logs", size=24, weight=ft.FontWeight.BOLD),
-            content=ft.Container(
-                content=ft.Text(log_content, size=11, selectable=True, font_family="Courier"),
-                width=700,
-                height=400,
-                padding=15,
-                bgcolor="#1a1a1a" if settings.theme == "dark" else "#f8fafc",
-                border_radius=8,
-            ),
-            actions=[
-                ft.TextButton("Clear Logs", on_click=clear_logs),
-                ft.TextButton("Close", on_click=close_dlg),
-            ],
-            actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        )
-        
-        page.dialog = dialog
-        dialog.open = True
-        page.update()
+    def clear_logs(e):
+        try:
+            with open(LOG_FILE, 'w') as f:
+                f.write('')
+            logs_text.value = ""
+            page.update()
+            show_snackbar("Logs cleared")
+        except Exception as ex:
+            show_snackbar(f"Error: {ex}", True)
 
-    # Status texts
-    server_status_text = ft.Text("Offline", size=16, weight=ft.FontWeight.BOLD, color="#ef4444")
-    ip_text = ft.Text("", size=13, color="#6b7280")
-    port_text = ft.Text("", size=13, color="#6b7280")
-    uptime_text = ft.Text("--:--:--", size=13, color="#6b7280")
-    qr_container = ft.Container(alignment=ft.alignment.center, height=300)
-    url_container = ft.Container()
+    logs_dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Server Logs"),
+        content=ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=logs_text,
+                    padding=10,
+                )
+            ], scroll=ft.ScrollMode.AUTO),
+            width=650,
+            height=400,
+        ),
+        actions=[
+            ft.TextButton("Refresh", on_click=lambda e: refresh_logs()),
+            ft.TextButton("Clear", on_click=clear_logs),
+            ft.TextButton("Close", on_click=lambda e: page.close(logs_dlg)),
+        ],
+        actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+    )
 
     def update_ui_for_server_state():
         """Updates the UI based on the current server state."""
         if server.is_running:
-            server_status_text.value = "Online"
-            server_status_text.color = "#10b981"
-            status_indicator.bgcolor = "#10b981"
-            status_indicator.shadow = ft.BoxShadow(spread_radius=0, blur_radius=8, color="#10b98140")
+            status_indicator.color = "green"
+            status_text.value = "Running"
+            ip_text.value = server.ip
+            port_text.value = str(server.port)
+            status_bar_text.value = f"Server running on {server.ip}:{server.port} | PID: {server.pid}"
             
-            ip_text.value = f"IP: {server.ip}"
-            port_text.value = f"Port: {server.port}"
-            
-            start_button.content.controls[1].value = "Stop Server"
-            start_button.content.controls[0].name = "stop_circle"
-            start_button.bgcolor = "#ef4444"
+            start_btn.current.visible = False
+            stop_btn.current.visible = True
             
             try:
                 qr_image, ws_url = generate_qr(server.ip, server.port)
-                qr_container.content = ft.Container(
-                    content=qr_image,
-                    bgcolor="white",
-                    border_radius=15,
-                    padding=15,
-                    shadow=ft.BoxShadow(
-                        spread_radius=1,
-                        blur_radius=15,
-                        color="#00000020",
-                        offset=ft.Offset(0, 4),
-                    )
-                )
-                
-                url_container.content = ft.Container(
-                    content=ft.Text(
-                        ws_url,
-                        size=12,
-                        color="#6b7280",
-                        selectable=True,
-                        text_align=ft.TextAlign.CENTER,
-                        weight=ft.FontWeight.W_500
+                qr_container.content = ft.Column([
+                    ft.Container(
+                        content=qr_image,
+                        bgcolor="white",
+                        border_radius=12,
+                        padding=12,
                     ),
-                    padding=ft.padding.symmetric(horizontal=20, vertical=10),
-                    bgcolor="#2a2a2a" if settings.theme == "dark" else "#f1f5f9",
-                    border_radius=8,
-                    margin=ft.margin.only(top=15),
-                )
+                    ft.Container(height=12),
+                    ft.Text("Scan with mobile app", size=13, weight=ft.FontWeight.W_500),
+                    ft.Container(
+                        content=ft.SelectionArea(
+                            content=ft.Text(
+                                ws_url,
+                                size=10,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                        ),
+                        border_radius=6,
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                    ),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+                
             except Exception as ex:
                 logger.error(f"Failed to generate QR: {ex}")
-            
-            if qr_section not in content_column.controls:
-                content_column.controls.append(qr_section)
+                
         else:
-            server_status_text.value = "Offline"
-            server_status_text.color = "#ef4444"
-            status_indicator.bgcolor = "#ef4444"
-            status_indicator.shadow = ft.BoxShadow(spread_radius=0, blur_radius=8, color="#ef444440")
+            status_indicator.color = "red"
+            status_text.value = "Offline"
+            ip_text.value = "---.---.---.---"
+            port_text.value = "----"
+            uptime_text.value = "00:00:00"
+            status_bar_text.value = "Ready"
             
-            ip_text.value = ""
-            port_text.value = ""
-            uptime_text.value = "--:--:--"
+            start_btn.current.visible = True
+            stop_btn.current.visible = False
             
-            start_button.content.controls[1].value = "Start Server"
-            start_button.content.controls[0].name = "play_circle"
-            start_button.bgcolor = "#10b981"
-            
-            qr_container.content = None
-            url_container.content = None
-            
-            if qr_section in content_column.controls:
-                content_column.controls.remove(qr_section)
+            qr_container.content = ft.Container(
+                content=ft.Column([
+                    ft.Icon("qr_code_2", size=100),
+                    ft.Container(height=12),
+                    ft.Text("QR Code will appear here", size=13, weight=ft.FontWeight.W_500),
+                    ft.Text("Start the server to generate", size=11),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                alignment=ft.alignment.center,
+            )
         
         page.update()
 
-    def toggle_server(e):
-        """Start or stop the server"""
-        start_button.disabled = True
+    def start_server(e):
+        """Start the server"""
+        start_btn.current.disabled = True
         page.update()
 
-        if not server.is_running:
-            success, message = server.start(settings.preferred_port)
-            if success:
-                show_snackbar("Server started successfully!")
-            else:
-                show_snackbar(message, True)
+        success, message = server.start(settings.preferred_port)
+        if success:
+            show_snackbar("Server started successfully!")
         else:
-            success, message = server.stop()
-            if success:
-                show_snackbar("Server stopped")
-            else:
-                show_snackbar(message, True)
+            show_snackbar(message, True)
         
-        start_button.disabled = False
+        start_btn.current.disabled = False
         update_ui_for_server_state()
 
-    # Header with gradient
-    header = ft.Container(
+    def stop_server(e):
+        """Stop the server"""
+        stop_btn.current.disabled = True
+        page.update()
+
+        success, message = server.stop()
+        if success:
+            show_snackbar("Server stopped")
+        else:
+            show_snackbar(message, True)
+        
+        stop_btn.current.disabled = False
+        update_ui_for_server_state()
+
+    # Toolbar with clear action buttons
+    toolbar = ft.Container(
         content=ft.Row([
-            ft.Row([
-                ft.Icon("mouse", size=32, color="white"),
-                ft.Text("Remote Mouse", size=24, weight=ft.FontWeight.BOLD, color="white"),
-            ], spacing=12),
-            ft.Row([
-                ft.IconButton(
-                    icon="description",
-                    icon_size=22,
-                    icon_color="white",
-                    tooltip="View Logs",
-                    on_click=show_logs_dialog,
-                ),
-                ft.IconButton(
-                    icon="settings",
-                    icon_size=22,
-                    icon_color="white",
-                    tooltip="Settings",
-                    on_click=show_settings_dialog
-                ),
-                ft.IconButton(
-                    icon="info",
-                    icon_size=22,
-                    icon_color="white",
-                    tooltip="About",
-                    on_click=show_info_dialog
-                ),
-            ], spacing=5),
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.symmetric(horizontal=30, vertical=20),
-        gradient=ft.LinearGradient(
-            begin=ft.alignment.center_left,
-            end=ft.alignment.center_right,
-            colors=["#1a1a1a", "#000000"],
-        ),
+            ft.IconButton(
+                icon="settings",
+                tooltip="Settings",
+                on_click=lambda e: page.open(settings_dlg),
+            ),
+            ft.IconButton(
+                icon="description",
+                tooltip="View Logs",
+                on_click=lambda e: (refresh_logs(), page.open(logs_dlg)),
+            ),
+            ft.IconButton(
+                icon="refresh",
+                tooltip="Refresh",
+                on_click=lambda e: update_ui_for_server_state(),
+            ),
+            ft.IconButton(
+                icon="info",
+                tooltip="About",
+                on_click=lambda e: page.open(about_dlg),
+            ),
+        ], alignment=ft.MainAxisAlignment.END),
+        padding=ft.padding.only(right=8, top=8, bottom=8),
+        border=ft.border.only(bottom=ft.BorderSide(1, "outline")),
     )
 
-    # Status card
-    status_card = ft.Container(
+    # Left Panel - Server Info
+    left_panel = ft.Container(
         content=ft.Column([
-            ft.Row([
-                status_indicator,
-                server_status_text,
-            ], spacing=10),
-            ft.Divider(height=10, color="transparent"),
-            ft.Row([
-                ft.Icon("router", size=16, color="#6b7280"),
-                ip_text,
-            ], spacing=8),
-            ft.Row([
-                ft.Icon("settings_ethernet", size=16, color="#6b7280"),
-                port_text,
-            ], spacing=8),
-            ft.Row([
-                ft.Icon("schedule", size=16, color="#6b7280"),
-                uptime_text,
-            ], spacing=8),
+            # Header
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon("mouse", size=24),
+                        ft.Text("Remote Mouse", size=16, weight=ft.FontWeight.BOLD),
+                    ], spacing=8),
+                    ft.Container(height=8),
+                    ft.Row([
+                        status_indicator,
+                        status_text,
+                    ], spacing=8),
+                ]),
+                padding=16,
+            ),
+            
+            ft.Divider(height=1),
+            
+            # Server Info
+            ft.Container(
+                content=ft.Column([
+                    ft.ListTile(
+                        leading=ft.Icon("router", size=20),
+                        title=ft.Text("IP Address", size=11),
+                        subtitle=ip_text,
+                        dense=True,
+                    ),
+                    ft.ListTile(
+                        leading=ft.Icon("settings_ethernet", size=20),
+                        title=ft.Text("Port", size=11),
+                        subtitle=port_text,
+                        dense=True,
+                    ),
+                ], spacing=0),
+            ),
+            
+            ft.Divider(height=1),
+            
+            # Uptime
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon("schedule", size=18),
+                        ft.Text("Uptime", size=11, weight=ft.FontWeight.BOLD),
+                    ], spacing=8),
+                    ft.Container(height=8),
+                    uptime_text,
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=16,
+            ),
+            
+            ft.Container(expand=True),
+            
+            # Control Buttons
+            ft.Container(
+                content=ft.Column([
+                    ft.FilledButton(
+                        ref=start_btn,
+                        text="Start Server",
+                        icon="play_arrow",
+                        on_click=start_server,
+                        width=float("inf"),
+                        height=45,
+                    ),
+                    ft.OutlinedButton(
+                        ref=stop_btn,
+                        text="Stop Server",
+                        icon="stop",
+                        on_click=stop_server,
+                        width=float("inf"),
+                        height=45,
+                        visible=False,
+                    ),
+                ], spacing=8),
+                padding=16,
+            ),
+        ]),
+        width=260,
+        border=ft.border.only(right=ft.BorderSide(1, "outline")),
+    )
+
+    # Right Panel - QR Code
+    right_panel = ft.Container(
+        content=qr_container,
+        padding=16,
+        expand=True,
+    )
+
+    # Status Bar
+    status_bar = ft.Container(
+        content=ft.Row([
+            ft.Icon("circle", size=8, color="green" if server.is_running else "red"),
+            status_bar_text,
         ], spacing=8),
-        padding=25,
-        border_radius=15,
-        bgcolor="#1a1a1a" if settings.theme == "dark" else "white",
-        shadow=ft.BoxShadow(
-            spread_radius=1,
-            blur_radius=15,
-            color="#00000015",
-            offset=ft.Offset(0, 4),
-        ),
-        width=400,
+        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+        border=ft.border.only(top=ft.BorderSide(1, "outline")),
     )
 
-    # Start button
-    start_button = ft.ElevatedButton(
-        content=ft.Row([
-            ft.Icon("play_circle", size=24, color="white"),
-            ft.Text("Start Server", size=16, weight=ft.FontWeight.BOLD, color="white"),
-        ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
-        on_click=toggle_server,
-        height=60,
-        width=400,
-        bgcolor="#10b981",
-        style=ft.ButtonStyle(
-            shape=ft.RoundedRectangleBorder(radius=12),
-            elevation=4,
-        )
-    )
-
-    # QR section
-    qr_section = ft.Container(
-        content=ft.Column([
-            ft.Text("Scan to Connect", size=18, weight=ft.FontWeight.BOLD, 
-                   color="#e5e7eb" if settings.theme == "dark" else "#1f2937"),
-            ft.Text("Open the mobile app and scan this QR code", 
-                   size=13, color="#6b7280", text_align=ft.TextAlign.CENTER),
-            qr_container,
-            url_container,
-        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
-        padding=25,
-        border_radius=15,
-        bgcolor="#1a1a1a" if settings.theme == "dark" else "white",
-        shadow=ft.BoxShadow(
-            spread_radius=1,
-            blur_radius=15,
-            color="#00000015",
-            offset=ft.Offset(0, 4),
-        ),
-        margin=ft.margin.only(top=20),
-        width=400,
-    )
-
-    # Responsive content container
-    content_column = ft.Column([
-        status_card,
-        start_button,
-    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=20, scroll=ft.ScrollMode.AUTO)
-
-    # Wrap in responsive container
-    responsive_content = ft.Container(
-        content=content_column,
-        padding=30,
-        alignment=ft.alignment.top_center,
-    )
-
-    # Main layout
+    # Main Layout
     main_content = ft.Column([
-        header,
+        toolbar,
         ft.Container(
-            content=responsive_content,
+            content=ft.Row([
+                left_panel,
+                right_panel,
+            ], spacing=0, expand=True),
             expand=True,
         ),
+        status_bar,
     ], spacing=0, expand=True)
 
     page.add(main_content)
-
-    # Initial UI setup
+    
+    # Initial UI update
     update_ui_for_server_state()
 
-    # Handle window resize
-    def on_resize(e):
-        # Adjust content width based on window width
-        if page.window.width < 600:
-            responsive_content.padding = 15
-            content_column.spacing = 15
-        else:
-            responsive_content.padding = 30
-            content_column.spacing = 20
-        page.update()
-
-    page.on_resize = on_resize
-
-    # Auto-start if enabled and server not already running
+    # Auto-start if enabled
     if settings.auto_start and not server.is_running:
         logger.info("Auto-starting server")
         time.sleep(0.5)
-        toggle_server(None)
+        start_server(None)
 
     def shutdown_app():
         """Gracefully shutdown the application."""

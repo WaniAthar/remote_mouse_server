@@ -1,8 +1,7 @@
 {
-    "preferred_port":8000,
-    "auto_start":false,
-    "minimize_to_tray":true,
-    "theme":"light",
-    "sensitivity":1.0,
-    "enable_logging":false
+  "preferred_port": 8000,
+  "auto_start": false,
+  "theme": "light",
+  "sensitivity": 1.0,
+  "enable_logging": false
 }
