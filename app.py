@@ -14,6 +14,138 @@ from typing import Optional
 from datetime import datetime
 import contextlib
 import signal
+
+
+# App constants
+APP_VERSION = "2.0.0"
+DEFAULT_PORT = 8000
+CONFIG_FILE = "config.json"
+LOG_FILE = "server.log"
+STATE_FILE = "server.state.json"
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+class Settings:
+    """Application settings manager with persistent storage"""
+    
+    def __init__(self):
+        self.preferred_port = DEFAULT_PORT
+        self.auto_start = False
+        self.theme = "system"
+        self.sensitivity = 1.0
+        self.enable_logging = True
+        self.load()
+
+    def load(self):
+        """Load settings from config file"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.preferred_port = data.get('preferred_port', DEFAULT_PORT)
+                    self.auto_start = data.get('auto_start', False)
+                    self.theme = data.get('theme', 'system')
+                    self.sensitivity = data.get('sensitivity', 1.0)
+                    self.enable_logging = data.get('enable_logging', True)
+                logger.info("Settings loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load settings: {e}")
+
+    def save(self):
+        """Save settings to config file"""
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump({
+                    'preferred_port': self.preferred_port,
+                    'auto_start': self.auto_start,
+                    'theme': self.theme,
+                    'sensitivity': self.sensitivity,
+                    'enable_logging': self.enable_logging
+                }, f, indent=2)
+            logger.info("Settings saved successfully")
+        except Exception as e:
+            logger.error(f"Failed to save settings: {e}")
+
+
+class ServerManager:
+    """Manages the FastAPI server lifecycle"""
+    
+    def __init__(self):
+        self.process: Optional[subprocess.Popen] = None
+        self.port: Optional[int] = None
+        self.ip: Optional[str] = None
+        self.start_time: Optional[datetime] = None
+        self.pid: Optional[int] = None
+        self.is_running = False
+        self._check_and_load_state()
+
+    def _check_and_load_state(self):
+        """Check for a running server from a previous session."""
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, 'r') as f:
+                    state = json.load(f)
+                
+                pid = state.get('pid')
+                port = state.get('port')
+                if pid and port and self._is_server_process_running(pid, port):
+                    logger.info(f"Found running server with PID {pid} on port {port}")
+                    self.is_running = True
+                    self.pid = pid
+                    self.ip = state.get('ip')
+                    self.port = port
+                    self.start_time = datetime.fromisoformat(state.get('start_time'))
+                else:
+                    logger.info("Stale state file found. Cleaning up.")
+                    self._clear_state()
+            except (json.JSONDecodeError, KeyError, OSError) as e:
+                logger.error(f"Error loading state file, cleaning up: {e}")
+                self._clear_state()
+
+    def _is_server_process_running(self, pid: int, port: int) -> bool:
+        """Check if a process with the given PID is running and listening on the port."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(('127.0.0.1', port)) != 0:
+                logger.debug(f"Port {port} is not open.")
+                return False
+
+        if sys.platform == "win32":
+            result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], capture_output=True, text=True)
+            is_running = str(pid) in result.stdout
+        else:
+            try:
+                os.kill(pid, 0)
+                is_running = True
+            except OSError:
+                is_running = False
+        
+        if not is_running:
+            logger.debug(f"PID {pid} is not running.")
+
+        return is_running
+
+    def _save_state(self):
+        """Save server state to a file."""
+        if not self.pid: return
+        state = {
+            'pid': self.pid,
+            'ip': self.ip,
+            'port': self.port,
+            'start_time': self.start_time.isoformat() if self.start_time else None
+        }
+        try:
+            with open(STATE_FILE, 'w') as f:
+                json.dump(state, f)
             logger.info(f"Server state saved for PID {self.pid}")
         except Exception as e:
             logger.error(f"Failed to save server state: {e}")
